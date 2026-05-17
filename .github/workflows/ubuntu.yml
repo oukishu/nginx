@@ -1,0 +1,113 @@
+name: Nginx 1.30.x Build
+run-name: Build Nginx 1.30.x${{ github.event.inputs.enable_h3 == 'true' && ' (H3-QUIC)' || '' }} for ${{ github.event.inputs.arch }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Select Build Architecture'
+        required: true
+        default: 'amd64'
+        type: choice
+        options:
+          - amd64
+          - arm64
+      enable_h3:
+        description: 'Enable HTTP/3 (QUIC) Module'
+        required: true
+        type: boolean
+        default: true
+
+env:
+    PCRE2: pcre2-10.47
+
+jobs:
+  build-nginx:
+    name: ubuntu-22.04-${{ github.event.inputs.arch }}
+    runs-on: ${{ github.event.inputs.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+        with:
+          ref: main
+
+      - name: Get dependencies
+        run: |
+          sudo -E apt-get update
+          sudo -E apt-get -y install build-essential autoconf automake libtool git wget curl
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          df -h
+      - name: Build
+        run: |
+          NGINX=$(wget -qO- --no-check-certificate https://nginx.org/en/download.html | grep -m1 -E "nginx-1.30.([0-9]+).tar.gz" | sed -E "s/.*(nginx-1.30.[0-9]+).tar.gz.*/\1/gm" )
+          OPENSSL=$(wget -qO- --no-check-certificate https://www.openssl-library.org/source/ | grep -m1 -E "openssl-3(\.[0-9]+){0,2}.tar.gz" | sed -E "s/.*(openssl-.*).tar.gz.*/\1/gm" )
+          ZLIB=$(wget -qO- --no-check-certificate https://zlib.net/ | grep -m1 -E "zlib-([0-9]+\.){0,3}tar.gz" | sed -E "s/.*(zlib-.*).tar.gz.*/\1/gm" )
+          wget -qO- --no-check-certificate https://nginx.org/download/${NGINX}.tar.gz | tar -xz
+          wget -qO- --no-check-certificate https://github.com/openssl/openssl/releases/download/${OPENSSL}/${OPENSSL}.tar.gz | tar -xz
+          wget -qO- --no-check-certificate https://github.com/PCRE2Project/pcre2/releases/download/${PCRE2}/${PCRE2}.tar.gz | tar -xz
+          wget -qO- --no-check-certificate https://www.zlib.net/${ZLIB}.tar.gz | tar -xz
+          echo "NGINX=${NGINX}" >> $GITHUB_ENV
+
+          CONF_ARGS="--prefix=/usr/local/nginx \
+          --conf-path=/etc/nginx/nginx.conf \
+          --pid-path=/var/lib/nginx/nginx.pid \
+          --lock-path=/var/lib/nginx/nginx.lock \
+          --with-http_ssl_module \
+          --with-http_v2_module \
+          --with-http_sub_module \
+          --with-http_gzip_static_module \
+          --with-http_slice_module \
+          --with-http_stub_status_module \
+          --with-stream \
+          --with-stream_ssl_module \
+          --with-pcre=../${PCRE2} \
+          --with-zlib=../${ZLIB} \
+          --with-openssl=../${OPENSSL}"
+
+          if [ "${{ github.event.inputs.enable_h3 }}" = "true" ]; then
+            CONF_ARGS="$CONF_ARGS --with-http_v3_module"
+          fi
+
+          cd ${NGINX}
+          ./configure $CONF_ARGS
+          make
+
+      - name: Configure
+        run: |
+          mkdir -p ./targets/${{ env.NGINX }}/{sbin,logs}
+                
+          cd ./${{ env.NGINX }}
+          cp objs/nginx ../targets/${{ env.NGINX }}/sbin/nginx
+          cp -R html ../targets/${{ env.NGINX }}/
+          cp -R conf ../targets/${{ env.NGINX }}/
+                
+          cd ../targets/${{ env.NGINX }}/conf
+          cp mime.types mime.types.default
+          cp fastcgi_params fastcgi_params.default
+          cp fastcgi.conf fastcgi.conf.default
+          cp uwsgi_params uwsgi_params.default
+          cp scgi_params scgi_params.default
+          cp nginx.conf nginx.conf.default
+
+      - name: Configure file
+        run: |
+          cp nginx.service ./targets/${{ env.NGINX }}/
+          cp -f conf.d/nginx.conf ./targets/${{ env.NGINX }}/conf/
+                
+          mkdir -p ./targets/${{ env.NGINX }}/conf/conf.d
+          cp -f conf.d/{default.conf,fastcgi_php.conf,nginx-ssl-php.conf} ./targets/${{ env.NGINX }}/conf/conf.d/
+
+      - name: Deploy
+        run: |
+          cd ./targets
+          echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+          tar czvf ${{ env.NGINX }}.tar.gz ${{ env.NGINX }}
+          rm -rf ${{ env.NGINX }}
+                
+      - name: Upload
+        uses: actions/upload-artifact@master
+        with:
+          name: ${{ env.NGINX }}_${{ github.event.inputs.arch }}${{ env.FILE_DATE }}
+          path: ./targets/
