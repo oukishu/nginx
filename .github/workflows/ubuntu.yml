@@ -23,8 +23,8 @@ env:
 
 jobs:
   build-nginx:
-    name: ubuntu-22.04-${{ github.event.inputs.arch }}
-    runs-on: ${{ github.event.inputs.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
+    name: ubuntu-24.04-${{ github.event.inputs.arch }}
+    runs-on: ${{ github.event.inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
 
     steps:
       - name: Checkout
